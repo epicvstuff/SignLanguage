@@ -9,6 +9,7 @@ A real-time American Sign Language (ASL) alphabet translator that uses MediaPipe
 - **Text-to-Speech**: Speaks accumulated text using pyttsx3
 - **Data Collection Tool**: Built-in tool to collect training data for custom gestures
 - **Visual Feedback**: Live webcam feed with hand skeleton overlay and confidence display
+- **Kaggle Dataset Support**: Train on the ASL Alphabet dataset from Kaggle
 
 ## Architecture
 
@@ -29,11 +30,59 @@ Webcam → MediaPipe Hands → 21 Hand Landmarks → Trained Classifier → Lett
    pip install -r requirements.txt
    ```
 
-## Usage
+## Training Options
 
-### Step 1: Collect Training Data
+You have two options for training the model:
 
-Run the data collection tool to record hand landmarks for each letter:
+### Option A: Train on Kaggle Dataset (Recommended for Quick Start)
+
+Train on the [ASL Alphabet dataset](https://www.kaggle.com/datasets/grassknoted/asl-alphabet) from Kaggle. This is the easiest way to get a working model.
+
+#### Using Google Colab
+
+1. Open a new Google Colab notebook
+2. Run these cells:
+
+```python
+# Cell 1: Install dependencies
+!pip install mediapipe scikit-learn kagglehub opencv-python
+
+# Cell 2: Download dataset
+import kagglehub
+dataset_path = kagglehub.dataset_download("grassknoted/asl-alphabet")
+print("Dataset path:", dataset_path)
+
+# Cell 3: Upload train_colab.py or copy its contents, then:
+# (Upload the train_colab.py file from this repo)
+!python train_colab.py
+
+# Cell 4: Download the trained model
+from google.colab import files
+files.download("asl_classifier.pkl")
+```
+
+3. Copy the downloaded `asl_classifier.pkl` to the `models/` folder
+
+#### Using Local Python
+
+```python
+from src.train_model import train_from_kaggle
+import kagglehub
+
+# Download dataset
+path = kagglehub.dataset_download("grassknoted/asl-alphabet")
+
+# Train (adjust max_images_per_class for speed vs accuracy)
+trainer, accuracy = train_from_kaggle(path, "models/asl_classifier.pkl", max_images_per_class=500)
+```
+
+### Option B: Collect Your Own Training Data
+
+This gives you a model trained on your specific hand and environment.
+
+#### Step 1: Collect Training Data
+
+Run the data collection tool:
 
 ```bash
 python src/data_collector.py
@@ -46,9 +95,7 @@ python src/data_collector.py
 
 Collect at least 50-100 samples per letter for best results.
 
-### Step 2: Train the Model
-
-Train the classifier on your collected data:
+#### Step 2: Train the Model
 
 ```bash
 python src/train_model.py
@@ -56,7 +103,7 @@ python src/train_model.py
 
 This will create `models/asl_classifier.pkl` with the trained model.
 
-### Step 3: Run the Translator
+## Running the Translator
 
 Launch the real-time translator:
 
@@ -77,6 +124,7 @@ python src/translator.py
 SignLanguage/
 ├── requirements.txt          # Dependencies
 ├── README.md                 # This file
+├── train_colab.py            # Standalone Colab training script
 ├── src/
 │   ├── __init__.py
 │   ├── data_collector.py     # Tool to collect training data
@@ -105,8 +153,8 @@ SignLanguage/
 - **NumPy**: Numerical operations
 - **scikit-learn**: Machine learning classifier
 - **pyttsx3**: Text-to-speech synthesis
+- **kagglehub** (optional): For downloading Kaggle datasets
 
 ## License
 
 MIT License
-
