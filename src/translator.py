@@ -184,6 +184,17 @@ class ASLTranslator:
         # Resize frame to fit in left panel
         frame_height = 480
         frame_width = 640
+        
+        # Ensure frame is valid and has correct format
+        if frame is None or frame.size == 0:
+            frame = np.zeros((frame_height, frame_width, 3), dtype=np.uint8)
+        
+        # Convert to BGR if needed (handle grayscale or BGRA)
+        if len(frame.shape) == 2:
+            frame = cv2.cvtColor(frame, cv2.COLOR_GRAY2BGR)
+        elif frame.shape[2] == 4:
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGRA2BGR)
+        
         frame_resized = cv2.resize(frame, (frame_width, frame_height))
         
         # Place frame
@@ -371,9 +382,17 @@ class ASLTranslator:
             print("Error: Could not open webcam")
             return
         
+        # Read a test frame to get camera dimensions
+        ret, test_frame = cap.read()
+        if not ret:
+            print("Error: Could not read from webcam")
+            cap.release()
+            return
+        
         print("\n" + "="*50)
         print("ASL Sign Language Translator")
         print("="*50)
+        print(f"Camera resolution: {test_frame.shape[1]}x{test_frame.shape[0]}")
         
         if self.model is None:
             print("\nWARNING: No trained model found!")
@@ -393,67 +412,84 @@ class ASLTranslator:
         cv2.namedWindow("ASL Translator", cv2.WINDOW_NORMAL)
         cv2.resizeWindow("ASL Translator", self.window_width, self.window_height)
         
-        while cap.isOpened():
-            ret, frame = cap.read()
-            if not ret:
-                break
-            
-            # Flip for mirror effect
-            frame = cv2.flip(frame, 1)
-            
-            # Get hand features and results
-            features, results = self.detector.get_features(frame)
-            hand_detected = features is not None
-            
-            # Draw hand landmarks on frame
-            frame = self.detector.draw_landmarks(frame, results)
-            
-            # Predict letter
-            prediction = None
-            confidence = 0.0
-            progress = 0.0
-            
-            if features is not None and self.model is not None:
-                prediction, confidence = self.predict(features)
-                
-                # Check for stable prediction
-                stable_letter, progress = self.get_stable_prediction(prediction, confidence)
-                
-                if stable_letter:
-                    self.buffer.add_letter(stable_letter)
-                    print(f"Added: {stable_letter} | Text: {self.buffer.get_text()}")
-            
-            # Draw UI
-            canvas = self.draw_ui(frame, prediction, confidence, progress, hand_detected)
-            
-            # Display
-            cv2.imshow("ASL Translator", canvas)
-            
-            # Handle key presses
-            key = cv2.waitKey(1) & 0xFF
-            
-            if key == ord('q') or key == ord('Q'):
-                break
-            elif key == ord(' '):
-                self.buffer.add_space()
-                print(f"Added space | Text: {self.buffer.get_text()}")
-            elif key == 8 or key == 127:  # Backspace
-                self.buffer.backspace()
-                print(f"Deleted | Text: {self.buffer.get_text()}")
-            elif key == 13 or key == 10:  # Enter
-                text = self.buffer.get_text()
-                if text.strip():
-                    print(f"Speaking: {text}")
-                    self.buffer.speak_buffer()
-            elif key == ord('c') or key == ord('C'):
-                self.buffer.clear()
-                print("Cleared text")
+        # Force window to front on macOS
+        cv2.waitKey(1)
         
-        # Cleanup
-        cap.release()
-        cv2.destroyAllWindows()
-        self.detector.close()
-        self.tts.stop()
+        try:
+            while cap.isOpened():
+                ret, frame = cap.read()
+                if not ret:
+                    print("Warning: Failed to read frame")
+                    continue
+                
+                # Flip for mirror effect
+                frame = cv2.flip(frame, 1)
+                
+                # Get hand features and results
+                features, results = self.detector.get_features(frame)
+                hand_detected = features is not None
+                
+                # Draw hand landmarks on frame
+                frame = self.detector.draw_landmarks(frame, results)
+                
+                # Predict letter
+                prediction = None
+                confidence = 0.0
+                progress = 0.0
+                
+                if features is not None and self.model is not None:
+                    prediction, confidence = self.predict(features)
+                    
+                    # Check for stable prediction
+                    stable_letter, progress = self.get_stable_prediction(prediction, confidence)
+                    
+                    if stable_letter:
+                        self.buffer.add_letter(stable_letter)
+                        print(f"Added: {stable_letter} | Text: {self.buffer.get_text()}")
+                
+                # Draw UI
+                try:
+                    canvas = self.draw_ui(frame, prediction, confidence, progress, hand_detected)
+                except Exception as e:
+                    print(f"UI Error: {e}")
+                    canvas = frame  # Fallback to raw frame
+                
+                # Display
+                cv2.imshow("ASL Translator", canvas)
+                
+                # Handle key presses - use longer wait for macOS stability
+                key = cv2.waitKey(10) & 0xFF
+                
+                if key == ord('q') or key == ord('Q'):
+                    break
+                elif key == ord(' '):
+                    self.buffer.add_space()
+                    print(f"Added space | Text: {self.buffer.get_text()}")
+                elif key == 8 or key == 127:  # Backspace
+                    self.buffer.backspace()
+                    print(f"Deleted | Text: {self.buffer.get_text()}")
+                elif key == 13 or key == 10:  # Enter
+                    text = self.buffer.get_text()
+                    if text.strip():
+                        print(f"Speaking: {text}")
+                        self.buffer.speak_buffer()
+                elif key == ord('c') or key == ord('C'):
+                    self.buffer.clear()
+                    print("Cleared text")
+                    
+        except KeyboardInterrupt:
+            print("\nInterrupted by user")
+        except Exception as e:
+            print(f"\nError in main loop: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # Cleanup
+            print("Cleaning up...")
+            cap.release()
+            cv2.destroyAllWindows()
+            self.detector.close()
+            self.tts.stop()
 
 
 def main():

@@ -1,15 +1,22 @@
 """
 Text-to-Speech Module
-Provides text-to-speech functionality using pyttsx3.
+Provides text-to-speech functionality.
+
+On macOS, uses the native 'say' command for reliable background speech.
+On other platforms, uses pyttsx3.
 """
 
 import threading
 import queue
+import subprocess
+import platform
+import shutil
 
 
 class TextToSpeech:
     """
-    Text-to-speech engine using pyttsx3.
+    Text-to-speech engine.
+    Uses macOS 'say' command or pyttsx3 depending on platform.
     Runs in a separate thread to avoid blocking the main application.
     """
     
@@ -27,12 +34,37 @@ class TextToSpeech:
         self.is_running = True
         self.is_speaking = False
         
+        # Detect platform and available TTS
+        self.use_macos_say = (platform.system() == 'Darwin' and 
+                              shutil.which('say') is not None)
+        
+        if self.use_macos_say:
+            print("TTS: Using macOS native 'say' command")
+        else:
+            print("TTS: Using pyttsx3")
+        
         # Start the speech thread
         self.speech_thread = threading.Thread(target=self._speech_loop, daemon=True)
         self.speech_thread.start()
     
-    def _init_engine(self):
-        """Initialize the pyttsx3 engine (must be done in the speech thread)."""
+    def _speak_macos(self, text):
+        """Speak using macOS 'say' command."""
+        try:
+            # Convert rate (pyttsx3 uses ~150 for normal, say uses ~175)
+            say_rate = int(self.rate * 1.2)
+            
+            # Run say command with explicit voice (Samantha is default US English)
+            process = subprocess.Popen(
+                ['say', '-v', 'Samantha', '-r', str(say_rate), text],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            process.wait()  # Wait for speech to complete
+        except Exception as e:
+            print(f"TTS Error: {e}")
+    
+    def _init_pyttsx3(self):
+        """Initialize pyttsx3 engine."""
         import pyttsx3
         engine = pyttsx3.init()
         engine.setProperty('rate', self.rate)
@@ -41,7 +73,9 @@ class TextToSpeech:
     
     def _speech_loop(self):
         """Main speech loop running in a separate thread."""
-        engine = self._init_engine()
+        engine = None
+        if not self.use_macos_say:
+            engine = self._init_pyttsx3()
         
         while self.is_running:
             try:
@@ -53,8 +87,13 @@ class TextToSpeech:
                     break
                 
                 self.is_speaking = True
-                engine.say(text)
-                engine.runAndWait()
+                
+                if self.use_macos_say:
+                    self._speak_macos(text)
+                else:
+                    engine.say(text)
+                    engine.runAndWait()
+                
                 self.is_speaking = False
                 
             except queue.Empty:
@@ -63,7 +102,11 @@ class TextToSpeech:
                 print(f"TTS Error: {e}")
                 self.is_speaking = False
         
-        engine.stop()
+        if engine:
+            try:
+                engine.stop()
+            except:
+                pass
     
     def speak(self, text):
         """
@@ -181,16 +224,19 @@ class SpeechBuffer:
 
 if __name__ == "__main__":
     # Test the TTS module
+    import time
+    
     print("Testing Text-to-Speech module...")
     
-    tts = TextToSpeech()
+    tts = TextToSpeech(rate=150)
     
     # Test speaking
+    print("Speaking: 'Hello, I am the ASL Sign Language Translator'")
     tts.speak("Hello, I am the ASL Sign Language Translator")
     
-    import time
-    time.sleep(3)
+    time.sleep(4)
     
+    print("Speaking: 'Testing letter pronunciation: A B C D E'")
     tts.speak("Testing letter pronunciation: A B C D E")
     
     time.sleep(4)
@@ -204,10 +250,10 @@ if __name__ == "__main__":
     buffer.add_letter('O')
     
     print(f"Buffer contents: {buffer.get_text()}")
+    print("Speaking buffer...")
     buffer.speak_buffer()
     
-    time.sleep(2)
+    time.sleep(3)
     
     tts.stop()
     print("TTS test complete!")
-
