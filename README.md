@@ -1,21 +1,28 @@
 # ASL Sign Language Translator
 
-A real-time American Sign Language (ASL) alphabet translator that uses MediaPipe for hand tracking, a trained classifier for letter recognition, and text-to-speech for audio output.
+A real-time American Sign Language (ASL) alphabet translator that uses MediaPipe for hand tracking, machine learning for letter recognition, and text-to-speech for audio output.
 
 ## Features
 
 - **Real-time Hand Tracking**: Uses MediaPipe Hands to detect and track 21 hand landmarks
 - **ASL Alphabet Recognition**: Recognizes letters A-Z from hand gestures
-- **Text-to-Speech**: Speaks accumulated text using pyttsx3
+- **Two Model Options**: 
+  - Random Forest on landmarks (fast, lightweight)
+  - CNN on images (more accurate, GPU-accelerated)
+- **Text-to-Speech**: Speaks accumulated text
 - **Data Collection Tool**: Built-in tool to collect training data for custom gestures
 - **Visual Feedback**: Live webcam feed with hand skeleton overlay and confidence display
-- **Kaggle Dataset Support**: Train on the ASL Alphabet dataset from Kaggle
 
-## Architecture
+## Model Comparison
 
-```
-Webcam → MediaPipe Hands → 21 Hand Landmarks → Trained Classifier → Letter Prediction → Text Display + TTS
-```
+| Feature | Random Forest (Landmarks) | CNN (Images) |
+|---------|--------------------------|--------------|
+| Input | 21 hand landmarks (63 features) | Hand image (224x224) |
+| Speed | Very fast | Moderate |
+| Accuracy | Good (~85%) | Better (~95%) |
+| GPU Required | No | Recommended |
+| Model Size | ~5 MB | ~15 MB |
+| Best For | Real-time on CPU | Maximum accuracy |
 
 ## Installation
 
@@ -29,19 +36,62 @@ Webcam → MediaPipe Hands → 21 Hand Landmarks → Trained Classifier → Lett
    ```bash
    pip install -r requirements.txt
    ```
+4. For CNN model, also install TensorFlow:
+   ```bash
+   pip install tensorflow
+   ```
 
 ## Training Options
 
-You have two options for training the model:
+### Option 1: CNN Model (Recommended - Best Accuracy)
 
-### Option A: Train on Kaggle Dataset (Recommended for Quick Start)
+Train a MobileNetV2-based CNN on hand images for the best accuracy.
 
-Train on the [ASL Alphabet dataset](https://www.kaggle.com/datasets/grassknoted/asl-alphabet) from Kaggle. This is the easiest way to get a working model.
-
-#### Using Google Colab
+#### Using Google Colab (Recommended - Free GPU)
 
 1. Open a new Google Colab notebook
-2. Run these cells:
+2. **Enable GPU**: Runtime → Change runtime type → GPU
+3. Run these cells:
+
+```python
+# Cell 1: Install dependencies
+!pip install tensorflow kagglehub
+
+# Cell 2: Download dataset and train
+import kagglehub
+dataset_path = kagglehub.dataset_download("grassknoted/asl-alphabet")
+
+# Cell 3: Clone repo and run training
+!git clone https://github.com/epicvstuff/SignLanguage.git
+%cd SignLanguage
+!python train_cnn_colab.py
+
+# Cell 4: Download the trained model
+from google.colab import files
+files.download("asl_cnn_model.keras")
+files.download("asl_cnn_model_classes.json")
+```
+
+4. Move downloaded files to the `models/` folder
+
+#### Using Local Python
+
+```python
+from src.train_cnn import train_cnn_model
+import kagglehub
+
+# Download dataset
+path = kagglehub.dataset_download("grassknoted/asl-alphabet")
+
+# Train CNN (uses MobileNetV2 transfer learning)
+model, history = train_cnn_model(path, "models/asl_cnn_model.keras", epochs=20)
+```
+
+### Option 2: Random Forest Model (Faster Training)
+
+Train a Random Forest classifier on hand landmark features.
+
+#### Using Google Colab
 
 ```python
 # Cell 1: Install dependencies
@@ -50,18 +100,16 @@ Train on the [ASL Alphabet dataset](https://www.kaggle.com/datasets/grassknoted/
 # Cell 2: Download dataset
 import kagglehub
 dataset_path = kagglehub.dataset_download("grassknoted/asl-alphabet")
-print("Dataset path:", dataset_path)
 
-# Cell 3: Upload train_colab.py or copy its contents, then:
-# (Upload the train_colab.py file from this repo)
+# Cell 3: Clone and train
+!git clone https://github.com/epicvstuff/SignLanguage.git
+%cd SignLanguage
 !python train_colab.py
 
-# Cell 4: Download the trained model
+# Cell 4: Download model
 from google.colab import files
 files.download("asl_classifier.pkl")
 ```
-
-3. Copy the downloaded `asl_classifier.pkl` to the `models/` folder
 
 #### Using Local Python
 
@@ -69,46 +117,37 @@ files.download("asl_classifier.pkl")
 from src.train_model import train_from_kaggle
 import kagglehub
 
-# Download dataset
 path = kagglehub.dataset_download("grassknoted/asl-alphabet")
-
-# Train (adjust max_images_per_class for speed vs accuracy)
 trainer, accuracy = train_from_kaggle(path, "models/asl_classifier.pkl", max_images_per_class=500)
 ```
 
-### Option B: Collect Your Own Training Data
+### Option 3: Collect Your Own Training Data
 
-This gives you a model trained on your specific hand and environment.
-
-#### Step 1: Collect Training Data
-
-Run the data collection tool:
+For a model trained on your specific hand and environment:
 
 ```bash
+# Step 1: Collect data (press A-Z to record, Q to quit)
 python src/data_collector.py
-```
 
-**Controls:**
-- Press **A-Z** keys to record samples for each letter
-- Press **Q** to quit and save data
-- Each key press records the current hand position
-
-Collect at least 50-100 samples per letter for best results.
-
-#### Step 2: Train the Model
-
-```bash
+# Step 2: Train Random Forest model
 python src/train_model.py
 ```
-
-This will create `models/asl_classifier.pkl` with the trained model.
 
 ## Running the Translator
 
 Launch the real-time translator:
 
 ```bash
-python src/translator.py
+cd src
+python translator.py
+```
+
+The translator automatically uses the CNN model if available, otherwise falls back to Random Forest.
+
+**To specify a model:**
+```bash
+python translator.py ../models/asl_cnn_model.keras    # Use CNN
+python translator.py ../models/asl_classifier.pkl     # Use Random Forest
 ```
 
 **Controls:**
@@ -124,16 +163,20 @@ python src/translator.py
 SignLanguage/
 ├── requirements.txt          # Dependencies
 ├── README.md                 # This file
-├── train_colab.py            # Standalone Colab training script
+├── train_colab.py            # Colab script for Random Forest
+├── train_cnn_colab.py        # Colab script for CNN
 ├── src/
 │   ├── __init__.py
 │   ├── data_collector.py     # Tool to collect training data
 │   ├── hand_detector.py      # MediaPipe hand landmark extraction
-│   ├── train_model.py        # Train the classifier
+│   ├── train_model.py        # Random Forest training
+│   ├── train_cnn.py          # CNN training (MobileNetV2)
 │   ├── translator.py         # Main real-time translator app
 │   └── text_to_speech.py     # TTS utility
 ├── models/
-│   └── asl_classifier.pkl    # Trained model (generated)
+│   ├── asl_classifier.pkl        # Random Forest model (generated)
+│   ├── asl_cnn_model.keras       # CNN model (generated)
+│   └── asl_cnn_model_classes.json # CNN class mappings
 └── data/
     └── asl_dataset.pkl       # Collected hand landmark data
 ```
@@ -151,9 +194,10 @@ SignLanguage/
 - **OpenCV**: Webcam capture and image display
 - **MediaPipe**: Hand landmark detection
 - **NumPy**: Numerical operations
-- **scikit-learn**: Machine learning classifier
+- **scikit-learn**: Random Forest classifier
+- **TensorFlow**: CNN model (optional, for better accuracy)
 - **pyttsx3**: Text-to-speech synthesis
-- **kagglehub** (optional): For downloading Kaggle datasets
+- **kagglehub**: For downloading Kaggle datasets
 
 ## License
 

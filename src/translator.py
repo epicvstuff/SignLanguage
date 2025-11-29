@@ -1,12 +1,17 @@
 """
 ASL Sign Language Translator
 Real-time ASL alphabet recognition with text-to-speech output.
+
+Supports two model types:
+1. Random Forest on hand landmarks (.pkl) - faster, works on CPU
+2. CNN on hand images (.keras/.h5) - more accurate, benefits from GPU
 """
 
 import cv2
 import numpy as np
 import os
 import time
+import json
 from collections import deque
 
 from hand_detector import HandDetector
@@ -20,21 +25,30 @@ class ASLTranslator:
     Recognizes hand gestures and converts them to text and speech.
     """
     
-    def __init__(self, model_path="models/asl_classifier.pkl"):
+    def __init__(self, model_path="models/asl_classifier.pkl", use_cnn=None):
         """
         Initialize the translator.
         
         Args:
-            model_path: Path to the trained classifier model
+            model_path: Path to the trained model (.pkl for Random Forest, .keras/.h5 for CNN)
+            use_cnn: Force CNN mode (True/False) or auto-detect from extension (None)
         """
         self.model_path = model_path
         self.detector = HandDetector()
         self.tts = TextToSpeech(rate=150)
         self.buffer = SpeechBuffer(self.tts)
         
+        # Model type detection
+        if use_cnn is None:
+            self.use_cnn = model_path.endswith('.keras') or model_path.endswith('.h5')
+        else:
+            self.use_cnn = use_cnn
+        
         # Load the trained model
         self.model = None
         self.label_encoder = None
+        self.class_names = None
+        self.cnn_img_size = 224
         self.load_model()
         
         # Prediction smoothing
@@ -57,7 +71,8 @@ class ASLTranslator:
             'warning': (100, 200, 255),
             'error': (100, 100, 255),
             'progress': (100, 200, 255),
-            'dim': (120, 120, 130)
+            'dim': (120, 120, 130),
+            'cnn': (255, 180, 100)  # Orange for CNN mode
         }
         
         # Window settings
@@ -65,24 +80,58 @@ class ASLTranslator:
         self.window_height = 700
     
     def load_model(self):
-        """Load the trained classifier model."""
+        """Load the trained model (Random Forest or CNN)."""
         if not os.path.exists(self.model_path):
             print(f"Warning: Model not found at {self.model_path}")
-            print("Please train a model first by running train_model.py")
+            print("Please train a model first.")
             return False
         
         try:
-            self.model, self.label_encoder = ASLTrainer.load_model(self.model_path)
-            print(f"Model loaded successfully from {self.model_path}")
-            print(f"Classes: {list(self.label_encoder.classes_)}")
-            return True
+            if self.use_cnn:
+                return self._load_cnn_model()
+            else:
+                return self._load_rf_model()
         except Exception as e:
             print(f"Error loading model: {e}")
+            import traceback
+            traceback.print_exc()
             return False
+    
+    def _load_rf_model(self):
+        """Load Random Forest model."""
+        self.model, self.label_encoder = ASLTrainer.load_model(self.model_path)
+        print(f"Random Forest model loaded from {self.model_path}")
+        print(f"Classes: {list(self.label_encoder.classes_)}")
+        return True
+    
+    def _load_cnn_model(self):
+        """Load CNN (Keras) model."""
+        try:
+            from tensorflow import keras
+        except ImportError:
+            print("Error: TensorFlow not installed. Install with: pip install tensorflow")
+            return False
+        
+        self.model = keras.models.load_model(self.model_path)
+        print(f"CNN model loaded from {self.model_path}")
+        
+        # Load class names
+        class_path = self.model_path.replace('.keras', '_classes.json').replace('.h5', '_classes.json')
+        if os.path.exists(class_path):
+            with open(class_path, 'r') as f:
+                self.class_names = json.load(f)
+            self.class_names = {int(k): v for k, v in self.class_names.items()}
+        else:
+            # Default to A-Z
+            self.class_names = {i: chr(ord('A') + i) for i in range(26)}
+        
+        print(f"Classes: {list(self.class_names.values())}")
+        print("Mode: CNN (image-based prediction)")
+        return True
     
     def predict(self, features):
         """
-        Predict the letter from hand features.
+        Predict the letter from hand features (Random Forest mode).
         
         Args:
             features: Normalized hand landmark features
@@ -92,6 +141,10 @@ class ASLTranslator:
             confidence: Prediction confidence
         """
         if self.model is None or features is None:
+            return None, 0.0
+        
+        if self.use_cnn:
+            # CNN mode doesn't use this method
             return None, 0.0
         
         # Reshape for prediction
@@ -104,6 +157,58 @@ class ASLTranslator:
         
         # Decode label
         letter = self.label_encoder.inverse_transform([prediction])[0]
+        
+        return letter, confidence
+    
+    def predict_cnn(self, frame, hand_bbox):
+        """
+        Predict the letter from hand image (CNN mode).
+        
+        Args:
+            frame: Full video frame
+            hand_bbox: Bounding box of detected hand (x, y, w, h)
+            
+        Returns:
+            letter: Predicted letter
+            confidence: Prediction confidence
+        """
+        if self.model is None or hand_bbox is None:
+            return None, 0.0
+        
+        x, y, w, h = hand_bbox
+        
+        # Add padding and ensure square crop
+        size = max(w, h)
+        pad = int(size * 0.2)
+        
+        # Center the crop
+        cx, cy = x + w // 2, y + h // 2
+        half = size // 2 + pad
+        
+        x1 = max(0, cx - half)
+        y1 = max(0, cy - half)
+        x2 = min(frame.shape[1], cx + half)
+        y2 = min(frame.shape[0], cy + half)
+        
+        # Crop hand region
+        hand_crop = frame[y1:y2, x1:x2]
+        
+        if hand_crop.size == 0:
+            return None, 0.0
+        
+        # Resize to model input size
+        hand_crop = cv2.resize(hand_crop, (self.cnn_img_size, self.cnn_img_size))
+        
+        # Preprocess for model
+        hand_crop = hand_crop.astype(np.float32) / 255.0
+        hand_crop = np.expand_dims(hand_crop, axis=0)
+        
+        # Predict
+        predictions = self.model.predict(hand_crop, verbose=0)
+        class_idx = np.argmax(predictions[0])
+        confidence = float(predictions[0][class_idx])
+        
+        letter = self.class_names.get(class_idx, '?')
         
         return letter, confidence
     
@@ -211,6 +316,12 @@ class ASLTranslator:
         # Title
         cv2.putText(canvas, "ASL Sign Language Translator", (20, 50),
                    cv2.FONT_HERSHEY_SIMPLEX, 1.2, self.colors['text'], 2)
+        
+        # Model type indicator
+        model_type = "CNN" if self.use_cnn else "RF"
+        model_color = self.colors['cnn'] if self.use_cnn else self.colors['accent']
+        cv2.putText(canvas, f"[{model_type}]", (450, 50),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.8, model_color, 2)
         
         # Status indicator
         status_x = 20
@@ -368,7 +479,8 @@ class ASLTranslator:
             cv2.putText(canvas, "Speaking...", (20, bar_y + 20),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.colors['success'], 1)
         
-        cv2.putText(canvas, "ASL Alphabet Translator", 
+        model_info = "CNN Model" if self.use_cnn else "Landmark Model"
+        cv2.putText(canvas, model_info, 
                    (self.window_width - 200, bar_y + 20),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, self.colors['dim'], 1)
         
@@ -393,13 +505,14 @@ class ASLTranslator:
         print("ASL Sign Language Translator")
         print("="*50)
         print(f"Camera resolution: {test_frame.shape[1]}x{test_frame.shape[0]}")
+        print(f"Model type: {'CNN (image-based)' if self.use_cnn else 'Random Forest (landmark-based)'}")
         
         if self.model is None:
             print("\nWARNING: No trained model found!")
             print("The translator will run but won't recognize signs.")
             print("Please train a model first:")
-            print("  1. Run: python src/data_collector.py")
-            print("  2. Run: python src/train_model.py")
+            print("  - For Random Forest: python src/train_model.py")
+            print("  - For CNN: python src/train_cnn.py (or use Colab)")
         
         print("\nControls:")
         print("  SPACE     - Add space to text")
@@ -437,15 +550,25 @@ class ASLTranslator:
                 confidence = 0.0
                 progress = 0.0
                 
-                if features is not None and self.model is not None:
-                    prediction, confidence = self.predict(features)
+                if self.model is not None:
+                    if self.use_cnn and hand_detected:
+                        # CNN mode: use hand bounding box to crop and predict
+                        hand_bbox = self.detector.get_hand_bbox(
+                            results, frame.shape[1], frame.shape[0]
+                        )
+                        if hand_bbox:
+                            prediction, confidence = self.predict_cnn(frame, hand_bbox)
+                    elif not self.use_cnn and features is not None:
+                        # Random Forest mode: use landmarks
+                        prediction, confidence = self.predict(features)
                     
-                    # Check for stable prediction
-                    stable_letter, progress = self.get_stable_prediction(prediction, confidence)
-                    
-                    if stable_letter:
-                        self.buffer.add_letter(stable_letter)
-                        print(f"Added: {stable_letter} | Text: {self.buffer.get_text()}")
+                    if prediction:
+                        # Check for stable prediction
+                        stable_letter, progress = self.get_stable_prediction(prediction, confidence)
+                        
+                        if stable_letter:
+                            self.buffer.add_letter(stable_letter)
+                            print(f"Added: {stable_letter} | Text: {self.buffer.get_text()}")
                 
                 # Draw UI
                 try:
@@ -499,11 +622,22 @@ def main():
     # Get model path relative to script location
     script_dir = os.path.dirname(os.path.abspath(__file__))
     parent_dir = os.path.dirname(script_dir)
-    model_path = os.path.join(parent_dir, "models/asl_classifier.pkl")
     
-    # Allow custom model path from command line
+    # Default to Random Forest model, but check for CNN model too
+    rf_model_path = os.path.join(parent_dir, "models/asl_classifier.pkl")
+    cnn_model_path = os.path.join(parent_dir, "models/asl_cnn_model.keras")
+    
+    # Check command line args
     if len(sys.argv) > 1:
         model_path = sys.argv[1]
+    elif os.path.exists(cnn_model_path):
+        # Prefer CNN model if available
+        model_path = cnn_model_path
+        print("Found CNN model, using it by default.")
+    else:
+        model_path = rf_model_path
+    
+    print(f"Using model: {model_path}")
     
     translator = ASLTranslator(model_path)
     translator.run()
@@ -511,4 +645,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
